@@ -64,7 +64,9 @@ class MainActivity : ComponentActivity() {
                         tool = tool, env = env, state = state, pickedName = pickedName,
                         onBack = { toolId = null },
                         onPick = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)) },
-                        onStart = { options -> start(tool.id, Uri.parse(pickedUri), pickedName ?: "video", options) },
+                        onStart = { options -> start(tool.id, Uri.parse(pickedUri), pickedName ?: "video", options, false) },
+                        onPreview = { options -> start(tool.id, Uri.parse(pickedUri), pickedName ?: "video", options, true) },
+                        onClosePreview = { JobRepository.state.value = JobState.Idle },
                         onCancel = { startService(Intent(this, ProcessingService::class.java).setAction(ProcessingService.ACTION_CANCEL)) },
                         onOpen = { uri -> startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "video/mp4").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) },
                         onShare = { uri -> startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("video/mp4").putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), null)) },
@@ -74,12 +76,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun start(toolId: String, uri: Uri, name: String, options: Map<String, String>) {
+    private fun start(toolId: String, uri: Uri, name: String, options: Map<String, String>, preview: Boolean) {
         JobRepository.state.value = JobState.Running("", 0f, "Starting")
         val intent = Intent(this, ProcessingService::class.java)
             .setData(uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             .putExtra(ProcessingService.EXTRA_TOOL, toolId)
             .putExtra(ProcessingService.EXTRA_NAME, name)
+            .putExtra(ProcessingService.EXTRA_PREVIEW, preview)
             .putExtra(ProcessingService.EXTRA_OPTIONS, Bundle().apply { options.forEach { (k, v) -> putString(k, v) } })
         ContextCompat.startForegroundService(this, intent)
     }

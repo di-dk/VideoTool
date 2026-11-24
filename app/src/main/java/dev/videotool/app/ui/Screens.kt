@@ -16,6 +16,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.background
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.viewinterop.AndroidView
+import android.widget.VideoView
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -81,7 +86,8 @@ fun HomeScreen(tools: List<VideoTool>, onOpen: (VideoTool) -> Unit) {
 @Composable
 fun ToolScreen(
     tool: VideoTool, env: Env, state: JobState, pickedName: String?,
-    onBack: () -> Unit, onPick: () -> Unit, onStart: (Map<String, String>) -> Unit, onCancel: () -> Unit,
+    onBack: () -> Unit, onPick: () -> Unit, onStart: (Map<String, String>) -> Unit, onPreview: (Map<String, String>) -> Unit,
+    onClosePreview: () -> Unit, onCancel: () -> Unit,
     onOpen: (Uri) -> Unit, onShare: (Uri) -> Unit,
 ) {
     val options = remember(tool, env) { tool.options(env) }
@@ -150,13 +156,48 @@ fun ToolScreen(
                         Text(state.message, fontSize = 12.sp)
                     }
                 }
+                is JobState.PreviewReady -> PreviewCard(state, onExport = { onStart(values.toMap()) }, onClose = onClosePreview)
                 JobState.Idle -> {}
             }
 
-            Button(onClick = { onStart(values.toMap()) }, enabled = pickedName != null && !running, modifier = Modifier.fillMaxWidth().height(52.dp)) {
-                Text(if (running) "Working…" else "Start", fontSize = 16.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(onClick = { onPreview(values.toMap()) }, enabled = pickedName != null && !running, modifier = Modifier.weight(1f).height(52.dp)) {
+                    Text("Preview 3 s", fontSize = 16.sp)
+                }
+                Button(onClick = { onStart(values.toMap()) }, enabled = pickedName != null && !running, modifier = Modifier.weight(1f).height(52.dp)) {
+                    Text(if (running) "Working…" else "Export", fontSize = 16.sp)
+                }
             }
             Box(Modifier.height(8.dp))
+        }
+    }
+}
+
+@Composable
+private fun PreviewCard(state: JobState.PreviewReady, onExport: () -> Unit, onClose: () -> Unit) {
+    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Preview: original | processed", fontWeight = FontWeight.SemiBold)
+            Box(Modifier.fillMaxWidth().aspectRatio(state.aspect).clip(RoundedCornerShape(12.dp))) {
+                AndroidView(
+                    factory = { ctx ->
+                        VideoView(ctx).apply {
+                            setOnPreparedListener { it.isLooping = true; it.setVolume(0f, 0f) }
+                            setVideoPath(state.path)
+                            start()
+                        }
+                    },
+                    update = { v -> if (v.tag != state.path) { v.tag = state.path; v.setVideoPath(state.path); v.start() } },
+                    modifier = Modifier.fillMaxSize(),
+                )
+                Text("ORIGINAL", Modifier.align(Alignment.TopStart).padding(6.dp).background(Color(0x99000000), RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 2.dp), fontSize = 11.sp, color = Color.White)
+                Text("PROCESSED", Modifier.align(Alignment.TopEnd).padding(6.dp).background(Color(0x99000000), RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 2.dp), fontSize = 11.sp, color = Color(0xFF3DDCFF))
+            }
+            Text("Short clip from the middle of your video, using the settings above. Change a setting and preview again, or export the whole video.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onExport) { Text("Export full video") }
+                OutlinedButton(onClick = onClose) { Text("Close") }
+            }
         }
     }
 }

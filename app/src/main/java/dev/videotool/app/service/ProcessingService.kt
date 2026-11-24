@@ -41,6 +41,7 @@ class ProcessingService : LifecycleService() {
         if (uri == null || tool == null || job?.isActive == true) { if (job?.isActive != true) stopSelf(); return START_NOT_STICKY }
         val opts = intent.getBundleExtra(EXTRA_OPTIONS)?.let { b -> b.keySet().associateWith { b.getString(it).orEmpty() } }.orEmpty()
         val name = intent.getStringExtra(EXTRA_NAME) ?: "video"
+        val preview = intent.getBooleanExtra(EXTRA_PREVIEW, false)
 
         createChannel()
         ServiceCompat.startForeground(this, NOTIF_ID, buildNotification(tool.title, 0f, "Starting", true), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
@@ -50,28 +51,57 @@ class ProcessingService : LifecycleService() {
         job = lifecycleScope.launch {
             val work = File(cacheDir, "job-${System.currentTimeMillis()}").also { it.mkdirs() }
             try {
-                val result = withContext(Dispatchers.IO) {
+                val result: JobState = withContext(Dispatchers.IO) {
                     val input = File(work, "input")
                     contentResolver.openInputStream(uri)?.use { src -> input.outputStream().use { src.copyTo(it) } }
                         ?: throw ToolFailed("Could not open the selected video")
                     val ffmpeg = FfmpegRunner(this@ProcessingService)
-                    val info = ffmpeg.probe(input.path)
+                    var info = ffmpeg.probe(input.path)
+                    var source = input
+                    if (preview) {
+                        // Cut a short clip from the middle so the preview is quick to process.
+                        val clipLen = minOf(PREVIEW_SECONDS, info.durationSec)
+                        val start = maxOf(0.0, info.durationSec / 2 - clipLen / 2)
+                        JobRepository.state.value = JobState.Running(tool.title, 0f, "Cutting preview clip")
+                        val clip = File(work, "clip.mp4")
+                        ffmpeg.run(listOf("-ss", "%.3f".format(java.util.Locale.US, start), "-t", "%.3f".format(java.util.Locale.US, clipLen), "-i", input.path,
+                            "-map", "0:v:0", "-map", "0:a:0?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-pix_fmt", "yuv420p",
+                            "-c:a", "aac", "-b:a", "192k", clip.path))
+                        source = clip
+                        info = ffmpeg.probe(clip.path)
+                    }
                     val output = File(work, "output.mp4")
                     var lastPct = -1
-                    val ctx = JobContext(this@ProcessingService, input, info, opts, ffmpeg, RifeRunner(this@ProcessingService), work, output) { f, stage ->
+                    val ctx = JobContext(this@ProcessingService, source, info, opts, ffmpeg, RifeRunner(this@ProcessingService), work, output) { f, stage ->
                         JobRepository.state.value = JobState.Running(tool.title, f, stage)
                         val pct = (f * 100).toInt()
                         if (pct != lastPct) { lastPct = pct; notify(buildNotification(tool.title, f, stage, false)) }
                     }
                     tool.run(ctx)
                     if (!output.exists() || output.length() == 0L) throw ToolFailed("The tool produced no output")
-                    JobRepository.state.value = JobState.Running(tool.title, 0.99f, "Saving to gallery")
-                    val base = name.substringBeforeLast('.', name)
-                    val saved = MediaSaver.saveVideo(this@ProcessingService, output, base + tool.outputSuffix(opts, info) + ".mp4")
-                    saved to (base + tool.outputSuffix(opts, info) + ".mp4")
+                    if (preview) {
+                        JobRepository.state.value = JobState.Running(tool.title, 0.98f, "Building side-by-side preview")
+                        val outInfo = ffmpeg.probe(output.path)
+                        val h = minOf(720, outInfo.height) / 2 * 2
+                        val target = "%.3f".format(java.util.Locale.US, outInfo.fps)
+                        val dest = File(cacheDir, "preview.mp4")
+                        // Original is brought to the processed frame rate (duplicated frames) so both halves play in lockstep.
+                        ffmpeg.run(listOf("-i", source.path, "-i", output.path, "-filter_complex",
+                            "[0:v]fps=$target,scale=-2:$h,setsar=1[a];[1:v]scale=-2:$h,setsar=1[b];[a][b]hstack=inputs=2,scale=trunc(iw/2)*2:trunc(ih/2)*2[v]",
+                            "-map", "[v]", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+                            "-movflags", "+faststart", dest.path))
+                        val pInfo = ffmpeg.probe(dest.path)
+                        JobState.PreviewReady(dest.path, pInfo.width.toFloat() / pInfo.height, info.durationSec)
+                    } else {
+                        JobRepository.state.value = JobState.Running(tool.title, 0.99f, "Saving to gallery")
+                        val base = name.substringBeforeLast('.', name)
+                        val fileName = base + tool.outputSuffix(opts, info) + ".mp4"
+                        JobState.Done(MediaSaver.saveVideo(this@ProcessingService, output, fileName), fileName)
+                    }
                 }
-                JobRepository.state.value = JobState.Done(result.first, result.second)
-                notify(doneNotification("Saved to Movies/VideoTool", result.second, result.first))
+                JobRepository.state.value = result
+                if (result is JobState.Done) notify(doneNotification("Saved to Movies/VideoTool", result.name, result.uri))
+                else getSystemService(NotificationManager::class.java).cancel(NOTIF_ID)
             } catch (e: CancellationException) {
                 JobRepository.state.value = JobState.Idle
             } catch (e: Exception) {
@@ -120,6 +150,8 @@ class ProcessingService : LifecycleService() {
         const val EXTRA_TOOL = "tool"
         const val EXTRA_NAME = "name"
         const val EXTRA_OPTIONS = "options"
+        const val EXTRA_PREVIEW = "preview"
+        const val PREVIEW_SECONDS = 3.0
         private const val CHANNEL = "processing"
         private const val NOTIF_ID = 1
     }
