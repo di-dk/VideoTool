@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.background
 import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -27,8 +28,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.graphics.TransformOrigin
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntSize
@@ -105,6 +104,10 @@ fun ToolScreen(
     val options = remember(tool, env) { tool.options(env) }
     val values = remember(tool) { mutableStateMapOf<String, String>().apply { options.forEach { if (it is ToolOption.Choice) put(it.key, it.default) } } }
     val running = state is JobState.Running
+    if (state is JobState.PreviewReady) {
+        PreviewScreen(state, onExport = { onStart(values.toMap()) }, onClose = onClosePreview)
+        return
+    }
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(Modifier.verticalScroll(rememberScrollState()).statusBarsPadding().navigationBarsPadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -168,7 +171,7 @@ fun ToolScreen(
                         Text(state.message, fontSize = 12.sp)
                     }
                 }
-                is JobState.PreviewReady -> PreviewCard(state, onExport = { onStart(values.toMap()) }, onClose = onClosePreview)
+                is JobState.PreviewReady -> {}
                 JobState.Idle -> {}
             }
 
@@ -185,29 +188,39 @@ fun ToolScreen(
     }
 }
 
+/** Full-screen preview: a big player on top (edge to edge), controls underneath. */
 @Composable
-private fun PreviewCard(state: JobState.PreviewReady, onExport: () -> Unit, onClose: () -> Unit) {
+private fun PreviewScreen(state: JobState.PreviewReady, onExport: () -> Unit, onClose: () -> Unit) {
     var mode by remember(state.path) { mutableStateOf(PreviewMode.Both) }
     var speed by remember(state.path) { mutableFloatStateOf(1f) }
     var paused by remember(state.path) { mutableStateOf(false) }
-    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Preview (480p)", fontWeight = FontWeight.SemiBold)
-            ZoomablePreview(state.path, state.aspect, mode, speed, paused)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                PreviewMode.entries.forEach { m ->
-                    FilterChip(selected = mode == m, onClick = { mode = m }, label = { Text(m.label) })
+    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
+            Row(Modifier.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onClose) { Text("← Close") }
+                Text("Preview (480p, 3 s)", fontWeight = FontWeight.SemiBold)
+            }
+            ZoomablePreview(state.path, state.aspect, state.stacked, mode, speed, paused)
+            Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PreviewMode.entries.forEach { m ->
+                        FilterChip(selected = mode == m, onClick = { mode = m }, label = { Text(m.label) })
+                    }
                 }
-            }
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { paused = !paused }) { Text(if (paused) "▶ Play" else "⏸ Pause") }
-                Text("Speed ${(speed * 100).roundToInt()}%", fontSize = 13.sp)
-            }
-            Slider(value = speed, onValueChange = { speed = (it * 20).roundToInt() / 20f }, valueRange = 0.1f..2f)
-            Text("Pinch to zoom, drag to pan, double-tap to reset. Use Original / Processed to flip between the two at the same zoom. The preview is a 3 s clip at 480p; the export keeps your full resolution.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onExport) { Text("Export full video") }
-                OutlinedButton(onClick = onClose) { Text("Close") }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { paused = !paused }) { Text(if (paused) "▶ Play" else "⏸ Pause") }
+                    Text("Speed ${(speed * 100).roundToInt()}%", fontSize = 13.sp)
+                }
+                Slider(value = speed, onValueChange = { speed = (it * 20).roundToInt() / 20f }, valueRange = 0.1f..2f)
+                Text(
+                    (if (state.stacked) "Original on top, processed below. " else "Original on the left, processed on the right. ") +
+                        "Pinch to zoom, drag to pan, double-tap to reset. Both always show the same area, and switching view keeps your zoom and position. The export keeps your full resolution.",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = onExport) { Text("Export full video") }
+                    OutlinedButton(onClick = onClose) { Text("Close") }
+                }
             }
         }
     }
@@ -216,51 +229,54 @@ private fun PreviewCard(state: JobState.PreviewReady, onExport: () -> Unit, onCl
 enum class PreviewMode(val label: String) { Both("Side by side"), Original("Original"), Processed("Processed") }
 
 /**
- * Shows the side-by-side clip (original on the left half, processed on the right half).
- * In Original / Processed mode that half fills the box, so zoom and pan stay identical when flipping between them.
+ * Shows the side-by-side clip. Zoom and pan are one shared state applied to every visible half, so in "Side by side"
+ * both halves always show exactly the same area, and flipping to Original / Processed keeps that area.
  */
 @Composable
-private fun ZoomablePreview(path: String, aspect: Float, mode: PreviewMode, speed: Float, paused: Boolean) {
+private fun ZoomablePreview(path: String, aspect: Float, stacked: Boolean, mode: PreviewMode, speed: Float, paused: Boolean) {
     var box by remember { mutableStateOf(IntSize.Zero) }
-    var scale by remember { mutableFloatStateOf(1f) }
-    var tx by remember { mutableFloatStateOf(0f) }
-    var ty by remember { mutableFloatStateOf(0f) }
-    val minScale = if (mode == PreviewMode.Both) 1f else 2f
-    // Visible content x-range must stay inside [a, b] (fractions of the full width) for the selected view.
-    val a = if (mode == PreviewMode.Processed) 0.5f else 0f
-    val b = if (mode == PreviewMode.Original) 0.5f else 1f
-
-    fun clampAndSet(s: Float, x: Float, y: Float) {
-        val w = box.width.toFloat(); val h = box.height.toFloat()
-        scale = s
-        tx = x.coerceIn(w - s * b * w, -s * a * w)
-        ty = y.coerceIn(h - s * h, 0f)
-    }
-    LaunchedEffect(mode, box) { clampAndSet(minScale, -minScale * a * box.width, 0f) }
+    // Zoom state lives here (keyed by clip only), so changing mode never resets it.
+    var scale by remember(path) { mutableFloatStateOf(1f) }
+    var ox by remember(path) { mutableFloatStateOf(0f) }   // offsets in normalised half-frame units, within [1 - scale, 0]
+    var oy by remember(path) { mutableFloatStateOf(0f) }
+    val both = mode == PreviewMode.Both
+    // aspect = combined clip; one half is aspect/2 (side by side) or aspect*2 (stacked).
+    val boxAspect = if (both) aspect else if (stacked) aspect * 2f else aspect / 2f
+    val glMode = when (mode) { PreviewMode.Both -> ViewMode.BOTH; PreviewMode.Original -> ViewMode.ORIGINAL; PreviewMode.Processed -> ViewMode.PROCESSED }
 
     Box(
-        Modifier.fillMaxWidth().aspectRatio(aspect).clip(RoundedCornerShape(12.dp)).onSizeChanged { box = it }
-            .pointerInput(mode) {
+        Modifier.fillMaxWidth().aspectRatio(boxAspect).onSizeChanged { box = it }
+            .pointerInput(both, stacked) {
                 detectTransformGestures { centroid, pan, zoom, _ ->
-                    val ns = (scale * zoom).coerceIn(minScale, minScale * 6f)
+                    val hw = if (both && !stacked) box.width / 2f else box.width.toFloat()
+                    val hh = if (both && stacked) box.height / 2f else box.height.toFloat()
+                    if (hw <= 0f || hh <= 0f) return@detectTransformGestures
+                    val lx = ((centroid.x % hw) / hw).coerceIn(0f, 1f)   // centroid inside its own half, 0..1
+                    val ly = ((centroid.y % hh) / hh).coerceIn(0f, 1f)
+                    val ns = (scale * zoom).coerceIn(1f, 8f)
                     val f = ns / scale
-                    clampAndSet(ns, centroid.x - (centroid.x - tx) * f + pan.x, centroid.y - (centroid.y - ty) * f + pan.y)
+                    ox = (lx - (lx - ox) * f + pan.x / hw).coerceIn(1f - ns, 0f)
+                    oy = (ly - (ly - oy) * f + pan.y / hh).coerceIn(1f - ns, 0f)
+                    scale = ns
                 }
             }
-            .pointerInput(mode) { detectTapGestures(onDoubleTap = { clampAndSet(minScale, -minScale * a * box.width, 0f) }) },
+            .pointerInput(Unit) { detectTapGestures(onDoubleTap = { scale = 1f; ox = 0f; oy = 0f }) },
     ) {
-        Box(Modifier.fillMaxSize().graphicsLayer {
-            transformOrigin = TransformOrigin(0f, 0f)
-            scaleX = scale; scaleY = scale; translationX = tx; translationY = ty
-        }) { PreviewPlayer(path, speed, paused, Modifier.fillMaxSize()) }
+        PreviewPlayer(path, speed, paused, glMode, stacked, scale, ox, oy, Modifier.fillMaxSize())
         val tag = Modifier.padding(6.dp).background(Color(0x99000000), RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 2.dp)
-        when (mode) {
-            PreviewMode.Both -> {
-                Text("ORIGINAL", Modifier.align(Alignment.TopStart).then(tag), fontSize = 11.sp, color = Color.White)
-                Text("PROCESSED", Modifier.align(Alignment.TopEnd).then(tag), fontSize = 11.sp, color = Color(0xFF3DDCFF))
+        val orig = @Composable { Text("ORIGINAL", tag, fontSize = 11.sp, color = Color.White) }
+        val proc = @Composable { Text("PROCESSED", tag, fontSize = 11.sp, color = Color(0xFF3DDCFF)) }
+        when {
+            mode == PreviewMode.Original -> Box(Modifier.align(Alignment.TopStart)) { orig() }
+            mode == PreviewMode.Processed -> Box(Modifier.align(Alignment.TopStart)) { proc() }
+            stacked -> {
+                Box(Modifier.align(Alignment.TopStart)) { orig() }
+                Box(Modifier.align(Alignment.BottomStart).fillMaxWidth().fillMaxHeight(0.5f)) { Box(Modifier.align(Alignment.TopStart)) { proc() } }
             }
-            PreviewMode.Original -> Text("ORIGINAL", Modifier.align(Alignment.TopStart).then(tag), fontSize = 11.sp, color = Color.White)
-            PreviewMode.Processed -> Text("PROCESSED", Modifier.align(Alignment.TopStart).then(tag), fontSize = 11.sp, color = Color(0xFF3DDCFF))
+            else -> {
+                Box(Modifier.align(Alignment.TopStart)) { orig() }
+                Box(Modifier.align(Alignment.TopEnd)) { proc() }
+            }
         }
     }
 }

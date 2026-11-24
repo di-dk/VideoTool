@@ -85,16 +85,18 @@ class ProcessingService : LifecycleService() {
                     if (preview) {
                         JobRepository.state.value = JobState.Running(tool.title, 0.98f, "Building side-by-side preview")
                         val outInfo = ffmpeg.probe(output.path)
-                        val h = minOf(720, outInfo.height) / 2 * 2
+                        val stacked = outInfo.width >= outInfo.height      // landscape: original on top, processed below
                         val target = "%.3f".format(java.util.Locale.US, outInfo.fps)
                         val dest = File(cacheDir, "preview.mp4")
-                        // Original is brought to the processed frame rate (duplicated frames) so both halves play in lockstep.
+                        val fit = if (stacked) "scale=${outInfo.width / 2 * 2}:-2" else "scale=-2:${outInfo.height / 2 * 2}"
+                        val stack = if (stacked) "vstack" else "hstack"
+                        // Original is brought to the processed frame rate (duplicated frames) so both play in lockstep.
                         ffmpeg.run(listOf("-i", source.path, "-i", output.path, "-filter_complex",
-                            "[0:v]fps=$target,scale=-2:$h,setsar=1[a];[1:v]scale=-2:$h,setsar=1[b];[a][b]hstack=inputs=2,scale=trunc(iw/2)*2:trunc(ih/2)*2[v]",
+                            "[0:v]fps=$target,$fit,setsar=1[a];[1:v]$fit,setsar=1[b];[a][b]$stack=inputs=2,scale=trunc(iw/2)*2:trunc(ih/2)*2[v]",
                             "-map", "[v]", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
                             "-movflags", "+faststart", dest.path))
                         val pInfo = ffmpeg.probe(dest.path)
-                        JobState.PreviewReady(dest.path, pInfo.width.toFloat() / pInfo.height, info.durationSec)
+                        JobState.PreviewReady(dest.path, pInfo.width.toFloat() / pInfo.height, info.durationSec, stacked)
                     } else {
                         JobRepository.state.value = JobState.Running(tool.title, 0.99f, "Saving to gallery")
                         val base = name.substringBeforeLast('.', name)

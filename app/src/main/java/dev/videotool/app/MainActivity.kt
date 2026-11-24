@@ -56,7 +56,9 @@ class MainActivity : ComponentActivity() {
                 }
 
                 val tool = toolId?.let { ToolRegistry.byId(it) }
-                BackHandler(enabled = tool != null) { toolId = null }
+                BackHandler(enabled = tool != null) {
+                    if (state is JobState.PreviewReady) JobRepository.state.value = JobState.Idle else toolId = null
+                }
                 if (tool == null) {
                     HomeScreen(ToolRegistry.all) { toolId = it.id }
                 } else {

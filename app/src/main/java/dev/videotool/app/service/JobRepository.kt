@@ -7,8 +7,8 @@ sealed interface JobState {
     data object Idle : JobState
     data class Running(val tool: String, val fraction: Float, val stage: String) : JobState
     data class Done(val uri: Uri, val name: String) : JobState
-    /** A short side-by-side (original | processed) clip, ready to play. [aspect] is width/height of the combined video. */
-    data class PreviewReady(val path: String, val aspect: Float, val seconds: Double) : JobState
+    /** A short side-by-side (original | processed) clip, ready to play. [aspect] is width/height of the combined video; [stacked] = original on top and processed below (landscape), otherwise side by side (portrait). */
+    data class PreviewReady(val path: String, val aspect: Float, val seconds: Double, val stacked: Boolean) : JobState
     data class Failed(val message: String) : JobState
 }
 
