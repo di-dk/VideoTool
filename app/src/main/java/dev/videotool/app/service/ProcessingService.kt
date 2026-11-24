@@ -62,10 +62,13 @@ class ProcessingService : LifecycleService() {
                         // Cut a short clip from the middle so the preview is quick to process.
                         val clipLen = minOf(PREVIEW_SECONDS, info.durationSec)
                         val start = maxOf(0.0, info.durationSec / 2 - clipLen / 2)
-                        JobRepository.state.value = JobState.Running(tool.title, 0f, "Cutting preview clip")
+                        JobRepository.state.value = JobState.Running(tool.title, 0f, "Cutting 480p preview clip")
                         val clip = File(work, "clip.mp4")
                         ffmpeg.run(listOf("-ss", "%.3f".format(java.util.Locale.US, start), "-t", "%.3f".format(java.util.Locale.US, clipLen), "-i", input.path,
-                            "-map", "0:v:0", "-map", "0:a:0?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-pix_fmt", "yuv420p",
+                            "-map", "0:v:0", "-map", "0:a:0?",
+                            // 480p (short side) keeps the preview fast to process; the real export uses the full resolution.
+                            "-vf", "scale='if(gt(iw,ih),-2,min(480,iw))':'if(gt(iw,ih),min(480,ih),-2)'",
+                            "-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-pix_fmt", "yuv420p",
                             "-c:a", "aac", "-b:a", "192k", clip.path))
                         source = clip
                         info = ffmpeg.probe(clip.path)

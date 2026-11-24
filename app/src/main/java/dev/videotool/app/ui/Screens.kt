@@ -19,8 +19,20 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.background
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.viewinterop.AndroidView
-import android.widget.VideoView
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.material3.Slider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntSize
+import kotlin.math.roundToInt
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -175,29 +187,80 @@ fun ToolScreen(
 
 @Composable
 private fun PreviewCard(state: JobState.PreviewReady, onExport: () -> Unit, onClose: () -> Unit) {
+    var mode by remember(state.path) { mutableStateOf(PreviewMode.Both) }
+    var speed by remember(state.path) { mutableFloatStateOf(1f) }
+    var paused by remember(state.path) { mutableStateOf(false) }
     Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Preview: original | processed", fontWeight = FontWeight.SemiBold)
-            Box(Modifier.fillMaxWidth().aspectRatio(state.aspect).clip(RoundedCornerShape(12.dp))) {
-                AndroidView(
-                    factory = { ctx ->
-                        VideoView(ctx).apply {
-                            setOnPreparedListener { it.isLooping = true; it.setVolume(0f, 0f) }
-                            setVideoPath(state.path)
-                            start()
-                        }
-                    },
-                    update = { v -> if (v.tag != state.path) { v.tag = state.path; v.setVideoPath(state.path); v.start() } },
-                    modifier = Modifier.fillMaxSize(),
-                )
-                Text("ORIGINAL", Modifier.align(Alignment.TopStart).padding(6.dp).background(Color(0x99000000), RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 2.dp), fontSize = 11.sp, color = Color.White)
-                Text("PROCESSED", Modifier.align(Alignment.TopEnd).padding(6.dp).background(Color(0x99000000), RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 2.dp), fontSize = 11.sp, color = Color(0xFF3DDCFF))
+            Text("Preview (480p)", fontWeight = FontWeight.SemiBold)
+            ZoomablePreview(state.path, state.aspect, mode, speed, paused)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                PreviewMode.entries.forEach { m ->
+                    FilterChip(selected = mode == m, onClick = { mode = m }, label = { Text(m.label) })
+                }
             }
-            Text("Short clip from the middle of your video, using the settings above. Change a setting and preview again, or export the whole video.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { paused = !paused }) { Text(if (paused) "▶ Play" else "⏸ Pause") }
+                Text("Speed ${(speed * 100).roundToInt()}%", fontSize = 13.sp)
+            }
+            Slider(value = speed, onValueChange = { speed = (it * 20).roundToInt() / 20f }, valueRange = 0.1f..2f)
+            Text("Pinch to zoom, drag to pan, double-tap to reset. Use Original / Processed to flip between the two at the same zoom. The preview is a 3 s clip at 480p; the export keeps your full resolution.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = onExport) { Text("Export full video") }
                 OutlinedButton(onClick = onClose) { Text("Close") }
             }
+        }
+    }
+}
+
+enum class PreviewMode(val label: String) { Both("Side by side"), Original("Original"), Processed("Processed") }
+
+/**
+ * Shows the side-by-side clip (original on the left half, processed on the right half).
+ * In Original / Processed mode that half fills the box, so zoom and pan stay identical when flipping between them.
+ */
+@Composable
+private fun ZoomablePreview(path: String, aspect: Float, mode: PreviewMode, speed: Float, paused: Boolean) {
+    var box by remember { mutableStateOf(IntSize.Zero) }
+    var scale by remember { mutableFloatStateOf(1f) }
+    var tx by remember { mutableFloatStateOf(0f) }
+    var ty by remember { mutableFloatStateOf(0f) }
+    val minScale = if (mode == PreviewMode.Both) 1f else 2f
+    // Visible content x-range must stay inside [a, b] (fractions of the full width) for the selected view.
+    val a = if (mode == PreviewMode.Processed) 0.5f else 0f
+    val b = if (mode == PreviewMode.Original) 0.5f else 1f
+
+    fun clampAndSet(s: Float, x: Float, y: Float) {
+        val w = box.width.toFloat(); val h = box.height.toFloat()
+        scale = s
+        tx = x.coerceIn(w - s * b * w, -s * a * w)
+        ty = y.coerceIn(h - s * h, 0f)
+    }
+    LaunchedEffect(mode, box) { clampAndSet(minScale, -minScale * a * box.width, 0f) }
+
+    Box(
+        Modifier.fillMaxWidth().aspectRatio(aspect).clip(RoundedCornerShape(12.dp)).onSizeChanged { box = it }
+            .pointerInput(mode) {
+                detectTransformGestures { centroid, pan, zoom, _ ->
+                    val ns = (scale * zoom).coerceIn(minScale, minScale * 6f)
+                    val f = ns / scale
+                    clampAndSet(ns, centroid.x - (centroid.x - tx) * f + pan.x, centroid.y - (centroid.y - ty) * f + pan.y)
+                }
+            }
+            .pointerInput(mode) { detectTapGestures(onDoubleTap = { clampAndSet(minScale, -minScale * a * box.width, 0f) }) },
+    ) {
+        Box(Modifier.fillMaxSize().graphicsLayer {
+            transformOrigin = TransformOrigin(0f, 0f)
+            scaleX = scale; scaleY = scale; translationX = tx; translationY = ty
+        }) { PreviewPlayer(path, speed, paused, Modifier.fillMaxSize()) }
+        val tag = Modifier.padding(6.dp).background(Color(0x99000000), RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 2.dp)
+        when (mode) {
+            PreviewMode.Both -> {
+                Text("ORIGINAL", Modifier.align(Alignment.TopStart).then(tag), fontSize = 11.sp, color = Color.White)
+                Text("PROCESSED", Modifier.align(Alignment.TopEnd).then(tag), fontSize = 11.sp, color = Color(0xFF3DDCFF))
+            }
+            PreviewMode.Original -> Text("ORIGINAL", Modifier.align(Alignment.TopStart).then(tag), fontSize = 11.sp, color = Color.White)
+            PreviewMode.Processed -> Text("PROCESSED", Modifier.align(Alignment.TopStart).then(tag), fontSize = 11.sp, color = Color(0xFF3DDCFF))
         }
     }
 }
